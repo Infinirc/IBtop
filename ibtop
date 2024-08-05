@@ -1,0 +1,80 @@
+#!/bin/bash
+
+
+list_interfaces() {
+    interfaces=($(ibstat -l))
+    echo "Available InfiniBand interfaces:"
+    for i in "${!interfaces[@]}"; do
+        echo "$((i+1)). ${interfaces[i]}"
+    done
+}
+
+
+select_interface() {
+    list_interfaces
+    read -p "Please select the interface number to monitor: " choice
+    if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#interfaces[@]}" ]; then
+        INTERFACE="${interfaces[$((choice-1))]}"
+    else
+        echo "Invalid selection, please select again."
+        select_interface
+    fi
+}
+
+SAMPLE_PERIOD=1
+previous_rx=0
+previous_tx=0
+
+
+get_link_speed() {
+    local speed=$(ibstat $INTERFACE 1 | grep "Rate:" | awk '{print $2}')
+    echo $speed
+}
+
+draw_bar() {
+    local value=$1
+    local max=$2
+    local width=50
+    local bar_width=$(awk -v val="$value" -v m="$max" -v w="$width" 'BEGIN {print int(val * w / m)}')
+    printf "["
+    for ((i=0; i<width; i++)); do
+        if [ $i -lt $bar_width ]; then
+            printf "#"
+        else
+            printf " "
+        fi
+    done
+    printf "] %.2f Gbps (%.2f GB/s)\n" $value $(awk -v val="$value" 'BEGIN {print val/8}')
+}
+
+
+select_interface
+
+
+LINK_SPEED=$(get_link_speed)
+
+while true; do
+    rx_bytes=$(cat /sys/class/infiniband/$INTERFACE/ports/1/counters/port_rcv_data)
+    tx_bytes=$(cat /sys/class/infiniband/$INTERFACE/ports/1/counters/port_xmit_data)
+    
+    rx_rate=$(awk -v rx="$rx_bytes" -v prev_rx="$previous_rx" -v period="$SAMPLE_PERIOD" 'BEGIN {printf "%.2f", (rx - prev_rx) * 8 / period / 1000000000}')
+    tx_rate=$(awk -v tx="$tx_bytes" -v prev_tx="$previous_tx" -v period="$SAMPLE_PERIOD" 'BEGIN {printf "%.2f", (tx - prev_tx) * 8 / period / 1000000000}')
+    
+
+    rx_rate_adjusted=$(awk -v rate="$rx_rate" 'BEGIN {printf "%.2f", rate * (47/6.15)}')
+    tx_rate_adjusted=$(awk -v rate="$tx_rate" 'BEGIN {printf "%.2f", rate * (47/6.15)}')
+    
+    clear
+    echo "Infinirc IBtop $INTERFACE"
+    echo "================================================="
+    echo "Link Speed: $LINK_SPEED Gbps"
+    echo "RX Rate:"
+    draw_bar $rx_rate_adjusted $LINK_SPEED
+    echo "TX Rate:"
+    draw_bar $tx_rate_adjusted $LINK_SPEED
+    
+    previous_rx=$rx_bytes
+    previous_tx=$tx_bytes
+    
+    sleep $SAMPLE_PERIOD
+done
